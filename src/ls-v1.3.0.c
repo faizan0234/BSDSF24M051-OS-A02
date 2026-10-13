@@ -1,7 +1,6 @@
-
 /*
  * Operating Systems Programming Assignment 02
- * Version 1.3.0 - Horizontal Column Display (-x)
+ * Version 1.4.0 - Alphabetical Sorting
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -34,6 +33,16 @@ int get_terminal_width(void);
 void print_columns(char **names, size_t count,
                    size_t max_length, int horizontal);
 void free_names(char **names, size_t count);
+int compare_names(const void *a, const void *b);
+
+/* Compare two filenames for alphabetical sorting. */
+int compare_names(const void *a, const void *b)
+{
+    const char *name_a = *(const char * const *)a;
+    const char *name_b = *(const char * const *)b;
+
+    return strcmp(name_a, name_b);
+}
 
 int main(int argc, char *argv[])
 {
@@ -121,7 +130,7 @@ void do_ls(const char *dir, int long_format, int horizontal)
             break;
         }
 
-        /* Skip hidden entries, as in the previous version. */
+        /* Skip hidden entries. */
         if (entry->d_name[0] == '.')
         {
             continue;
@@ -170,9 +179,15 @@ void do_ls(const char *dir, int long_format, int horizontal)
 
     closedir(dp);
 
+    /*
+     * Sort all filenames before displaying them.
+     * This applies to default, -x, and -l output.
+     */
+    qsort(names, count, sizeof(names[0]), compare_names);
+
     if (long_format)
     {
-        /* Preserve the existing v1.1.0 long listing. */
+        /* Long listing (-l), in alphabetical order. */
         for (size_t i = 0; i < count; i++)
         {
             print_long_entry(dir, names[i]);
@@ -231,7 +246,6 @@ void print_columns(char **names, size_t count,
         /*
          * Horizontal layout (-x):
          * Print filenames from left to right.
-         * Start a new row after reaching the column limit.
          */
         size_t current_column = 0;
 
@@ -243,7 +257,8 @@ void print_columns(char **names, size_t count,
                 current_column = 0;
             }
 
-            if (current_column == columns - 1 || i == count - 1)
+            if (current_column == columns - 1 ||
+                i == count - 1)
             {
                 printf("%s", names[i]);
             }
