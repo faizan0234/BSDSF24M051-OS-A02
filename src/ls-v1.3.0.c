@@ -1,6 +1,6 @@
 /*
  * Operating Systems Programming Assignment 02
- * Version 1.5.0 - Colorized Output
+ * Version 1.6.0 - Recursive Listing
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -19,8 +19,6 @@
 #include <time.h>
 #include <getopt.h>
 #include <limits.h>
-#include <sys/wait.h>
-#include <termios.h>
 
 #define DEFAULT_TERMINAL_WIDTH 80
 #define COLUMN_SPACING 2
@@ -30,7 +28,8 @@
 #define COLOR_GREEN "\033[1;32m"
 #define COLOR_CYAN  "\033[1;36m"
 
-void do_ls(const char *dir, int long_format, int horizontal);
+void do_ls(const char *dir, int long_format, int horizontal,
+           int recursive, int print_header);
 void print_long_entry(const char *dir, const char *name);
 void format_permissions(mode_t mode, char permissions[11]);
 int get_terminal_width(void);
@@ -49,7 +48,6 @@ int compare_names(const void *a, const void *b)
     return strcmp(name_a, name_b);
 }
 
-/* Return a color according to the file type and permissions. */
 const char *get_name_color(const char *dir, const char *name)
 {
     char path[PATH_MAX];
@@ -58,29 +56,19 @@ const char *get_name_color(const char *dir, const char *name)
     int length = snprintf(path, sizeof(path), "%s/%s", dir, name);
 
     if (length < 0 || (size_t)length >= sizeof(path))
-    {
         return COLOR_RESET;
-    }
 
     if (lstat(path, &file_info) == -1)
-    {
         return COLOR_RESET;
-    }
 
     if (S_ISLNK(file_info.st_mode))
-    {
         return COLOR_CYAN;
-    }
 
     if (S_ISDIR(file_info.st_mode))
-    {
         return COLOR_BLUE;
-    }
 
     if (file_info.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH))
-    {
         return COLOR_GREEN;
-    }
 
     return COLOR_RESET;
 }
@@ -88,7 +76,6 @@ const char *get_name_color(const char *dir, const char *name)
 void print_colored_name(const char *dir, const char *name)
 {
     const char *color = get_name_color(dir, name);
-
     printf("%s%s%s", color, name, COLOR_RESET);
 }
 
@@ -96,9 +83,10 @@ int main(int argc, char *argv[])
 {
     int long_format = 0;
     int horizontal = 0;
+    int recursive = 0;
     int option;
 
-    while ((option = getopt(argc, argv, "lx")) != -1)
+    while ((option = getopt(argc, argv, "lxR")) != -1)
     {
         switch (option)
         {
@@ -110,9 +98,13 @@ int main(int argc, char *argv[])
                 horizontal = 1;
                 break;
 
+            case 'R':
+                recursive = 1;
+                break;
+
             default:
                 fprintf(stderr,
-                        "Usage: %s [-l] [-x] [directory ...]\n",
+                        "Usage: %s [-l] [-x] [-R] [directory ...]\n",
                         argv[0]);
                 return EXIT_FAILURE;
         }
@@ -120,7 +112,7 @@ int main(int argc, char *argv[])
 
     if (optind == argc)
     {
-        do_ls(".", long_format, horizontal);
+        do_ls(".", long_format, horizontal, recursive, recursive);
     }
     else
     {
@@ -128,16 +120,23 @@ int main(int argc, char *argv[])
 
         for (int i = optind; i < argc; i++)
         {
-            if (directory_count > 1)
+            if (recursive)
             {
-                printf("%s:\n", argv[i]);
+                if (i > optind)
+                    putchar('\n');
+
+                do_ls(argv[i], long_format, horizontal, recursive, 1);
             }
-
-            do_ls(argv[i], long_format, horizontal);
-
-            if (i < argc - 1)
+            else
             {
-                putchar('\n');
+                if (directory_count > 1)
+                    printf("%s:\n", argv[i]);
+
+                do_ls(argv[i], long_format, horizontal, 0,
+                      directory_count > 1);
+
+                if (i < argc - 1)
+                    putchar('\n');
             }
         }
     }
@@ -145,8 +144,12 @@ int main(int argc, char *argv[])
     return EXIT_SUCCESS;
 }
 
-void do_ls(const char *dir, int long_format, int horizontal)
+void do_ls(const char *dir, int long_format, int horizontal,
+           int recursive, int print_header)
 {
+    if (print_header)
+        printf("%s:\n", dir);
+
     DIR *dp = opendir(dir);
 
     if (dp == NULL)
@@ -170,24 +173,19 @@ void do_ls(const char *dir, int long_format, int horizontal)
         if (entry == NULL)
         {
             if (errno != 0)
-            {
                 perror("readdir failed");
-            }
+
             break;
         }
 
-        /* Keep hidden-file behavior from the previous version. */
+        /* Hidden files remain excluded, as in previous versions. */
         if (entry->d_name[0] == '.')
-        {
             continue;
-        }
 
         size_t name_length = strlen(entry->d_name);
 
         if (name_length > max_length)
-        {
             max_length = name_length;
-        }
 
         if (count == capacity)
         {
@@ -224,19 +222,62 @@ void do_ls(const char *dir, int long_format, int horizontal)
 
     closedir(dp);
 
-    /* Alphabetical sorting for every output mode. */
+    /* Sort entries alphabetically. */
     qsort(names, count, sizeof(names[0]), compare_names);
 
+    /* Display current directory contents. */
     if (long_format)
     {
         for (size_t i = 0; i < count; i++)
-        {
             print_long_entry(dir, names[i]);
-        }
     }
     else
     {
         print_columns(dir, names, count, max_length, horizontal);
+    }
+
+    /*
+     * Recursive listing:
+     * Visit each real subdirectory after displaying this directory.
+     */
+    if (recursive)
+    {
+        for (size_t i = 0; i < count; i++)
+        {
+            /* Base case: never recurse into . or .. */
+            if (strcmp(names[i], ".") == 0 ||
+                strcmp(names[i], "..") == 0)
+            {
+                continue;
+            }
+
+            char path[PATH_MAX];
+            struct stat file_info;
+
+            /* Construct the full path to the entry. */
+            int length = snprintf(path, sizeof(path), "%s/%s",
+                                  dir, names[i]);
+
+            if (length < 0 || (size_t)length >= sizeof(path))
+            {
+                fprintf(stderr, "Path too long: %s/%s\n",
+                        dir, names[i]);
+                continue;
+            }
+
+            if (lstat(path, &file_info) == -1)
+            {
+                perror(path);
+                continue;
+            }
+
+            /* lstat prevents following symlinks to directories. */
+            if (S_ISDIR(file_info.st_mode))
+            {
+                putchar('\n');
+                do_ls(path, long_format, horizontal, recursive, 1);
+            }
+        }
     }
 
     free_names(names, count);
@@ -259,9 +300,7 @@ void print_columns(const char *dir, char **names, size_t count,
                    size_t max_length, int horizontal)
 {
     if (count == 0)
-    {
         return;
-    }
 
     size_t column_width = max_length + COLUMN_SPACING;
     int terminal_width = get_terminal_width();
@@ -269,14 +308,10 @@ void print_columns(const char *dir, char **names, size_t count,
     size_t columns = (size_t)terminal_width / column_width;
 
     if (columns == 0)
-    {
         columns = 1;
-    }
 
     if (columns > count)
-    {
         columns = count;
-    }
 
     if (horizontal)
     {
@@ -297,9 +332,7 @@ void print_columns(const char *dir, char **names, size_t count,
                 size_t padding = column_width - strlen(names[i]);
 
                 for (size_t p = 0; p < padding; p++)
-                {
                     putchar(' ');
-                }
             }
 
             current_column++;
@@ -318,9 +351,7 @@ void print_columns(const char *dir, char **names, size_t count,
                 size_t index = row + column * rows;
 
                 if (index >= count)
-                {
                     continue;
-                }
 
                 print_colored_name(dir, names[index]);
 
@@ -329,9 +360,7 @@ void print_columns(const char *dir, char **names, size_t count,
                     size_t padding = column_width - strlen(names[index]);
 
                     for (size_t p = 0; p < padding; p++)
-                    {
                         putchar(' ');
-                    }
                 }
             }
 
@@ -409,9 +438,7 @@ void print_long_entry(const char *dir, const char *name)
     char *modified_time = ctime(&file_info.st_mtime);
 
     if (modified_time == NULL)
-    {
         modified_time = "??? ??? ?? ??:??\n";
-    }
 
     printf("%s %2lu %-8s %-8s %8lld %.12s ",
            permissions,
@@ -428,9 +455,7 @@ void print_long_entry(const char *dir, const char *name)
 void free_names(char **names, size_t count)
 {
     for (size_t i = 0; i < count; i++)
-    {
         free(names[i]);
-    }
 
     free(names);
 }
